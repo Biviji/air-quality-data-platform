@@ -14,14 +14,15 @@ def load_watermark(state_path: Path) -> str | None:
 
 
 def save_watermark(state_path: Path, timestamp: str) -> None:
-    state_path.parent.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temporary_path = state_path.with_suffix(".tmp")
 
     state = {
         "last_successful_timestamp": timestamp
     }
 
-    with state_path.open("w", encoding="utf-8") as file:
+    with temporary_path.open("w", encoding="utf-8") as file:
         json.dump(state, file, indent=2)
+
+    temporary_path.replace(state_path)
