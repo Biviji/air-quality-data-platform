@@ -19,3 +19,4 @@ logs/
 *.egg-info/
 dist/
 build/
+data/state/
