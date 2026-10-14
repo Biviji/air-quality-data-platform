@@ -6,6 +6,7 @@ from air_quality.ingestion.fetcher import OpenAQFetcher
 from air_quality.storage.jsonl_writer import write_jsonl
 from air_quality.storage.state import load_watermark, save_watermark
 from air_quality.validation.deduplication import deduplicate_measurements
+from air_quality.validation.measurement_validator import validate_batch
 
 
 class IngestionPipeline:
@@ -27,6 +28,9 @@ class IngestionPipeline:
 
         self.raw_dir = project_root / "data" / "raw" / "batches"
         self.processed_dir = project_root / "data" / "processed" / "batches"
+        self.rejected_dir = (
+                project_root / "data" / "rejected" / "batches"
+        )
 
     def run(self, initial_start: datetime) -> int:
 
@@ -83,38 +87,63 @@ class IngestionPipeline:
         print(f"Unique records: {len(unique_measurements)}")
         print(f"Duplicates removed: {len(measurements) - len(unique_measurements)}")
 
-        # 7. Формируем имя batch-файла
+        # 7. Validation
+
+        accepted, rejected = validate_batch(unique_measurements)
+
+        print(f"Accepted records: {len(accepted)}")
+        print(f"Rejected records: {len(rejected)}")
+
+        # 8. Формируем имя batch-файла
         start_label = start.strftime("%Y%m%dT%H%M%SZ")
         end_label = end.strftime("%Y%m%dT%H%M%SZ")
 
-        output_path = self.raw_dir / (
+        filename = (
             f"sensor_{self.sensor_id}_"
             f"{start_label}_{end_label}.jsonl"
         )
 
-        # 8. Сохраняем batch
+        # 9. Создаём директории
+        self.raw_dir.mkdir(parents=True, exist_ok=True)
+        self.processed_dir.mkdir(parents=True, exist_ok=True)
+        self.rejected_dir.mkdir(parents=True, exist_ok=True)
 
-        temporary_path = output_path.with_suffix(".tmp")
+        # 10. Формируем пути
+        raw_path = self.raw_dir / filename
+        processed_path = self.processed_dir / filename
+        rejected_path = self.rejected_dir / filename
 
-        write_jsonl(measurements, temporary_path)
-        temporary_path.replace(output_path)
+        # 11. Сохраняем RAW
+        raw_temp = raw_path.with_suffix(".tmp")
 
-        processed_path = self.processed_dir / output_path.name
+        write_jsonl(measurements, raw_temp)
+        raw_temp.replace(raw_path)
+
+        # 12. Сохраняем ACCEPTED
         processed_temp = processed_path.with_suffix(".tmp")
 
-        processed_path.parent.mkdir(parents=True, exist_ok=True)
-
-        write_jsonl(unique_measurements, processed_temp)
+        write_jsonl(accepted, processed_temp)
         processed_temp.replace(processed_path)
 
-        # 9. Обновляем watermark
+        # 13. Сохраняем REJECTED
+        if rejected:
+            rejected_temp = rejected_path.with_suffix(".tmp")
+
+            write_jsonl(rejected, rejected_temp)
+            rejected_temp.replace(rejected_path)
+        elif rejected_path.exists():
+            rejected_path.unlink()
+
+        # 14. Обновляем watermark
         save_watermark(
             self.state_path,
             params["datetime_to"]
         )
 
-        print(f"Raw saved: {output_path}")
+        # 15. Выводим результаты
+        print(f"Raw saved: {raw_path}")
         print(f"Processed saved: {processed_path}")
+        print(f"Rejected records: {len(rejected)}")
         print(f"Watermark: {params['datetime_to']}")
 
-        return len(unique_measurements)
+        return len(accepted)
