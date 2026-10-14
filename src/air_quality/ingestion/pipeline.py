@@ -5,6 +5,7 @@ from pathlib import Path
 from air_quality.ingestion.fetcher import OpenAQFetcher
 from air_quality.storage.jsonl_writer import write_jsonl
 from air_quality.storage.state import load_watermark, save_watermark
+from air_quality.validation.deduplication import deduplicate_measurements
 
 
 class IngestionPipeline:
@@ -25,6 +26,7 @@ class IngestionPipeline:
         )
 
         self.raw_dir = project_root / "data" / "raw" / "batches"
+        self.processed_dir = project_root / "data" / "processed" / "batches"
 
     def run(self, initial_start: datetime) -> int:
 
@@ -71,7 +73,17 @@ class IngestionPipeline:
                 "Pagination limit reached; batch may be incomplete"
             )
 
-        # 6. Формируем имя batch-файла
+        # 6. Удаляем дубликаты внутри batch
+        unique_measurements = deduplicate_measurements(
+            measurements,
+            self.sensor_id,
+        )
+
+        print(f"Raw records: {len(measurements)}")
+        print(f"Unique records: {len(unique_measurements)}")
+        print(f"Duplicates removed: {len(measurements) - len(unique_measurements)}")
+
+        # 7. Формируем имя batch-файла
         start_label = start.strftime("%Y%m%dT%H%M%SZ")
         end_label = end.strftime("%Y%m%dT%H%M%SZ")
 
@@ -80,19 +92,29 @@ class IngestionPipeline:
             f"{start_label}_{end_label}.jsonl"
         )
 
-        # 7. Сохраняем batch
+        # 8. Сохраняем batch
+
         temporary_path = output_path.with_suffix(".tmp")
 
         write_jsonl(measurements, temporary_path)
         temporary_path.replace(output_path)
 
-        # 8. Обновляем watermark
+        processed_path = self.processed_dir / output_path.name
+        processed_temp = processed_path.with_suffix(".tmp")
+
+        processed_path.parent.mkdir(parents=True, exist_ok=True)
+
+        write_jsonl(unique_measurements, processed_temp)
+        processed_temp.replace(processed_path)
+
+        # 9. Обновляем watermark
         save_watermark(
             self.state_path,
             params["datetime_to"]
         )
 
-        print(f"Saved: {output_path}")
+        print(f"Raw saved: {output_path}")
+        print(f"Processed saved: {processed_path}")
         print(f"Watermark: {params['datetime_to']}")
 
-        return len(measurements)
+        return len(unique_measurements)
